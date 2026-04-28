@@ -23,6 +23,12 @@ interface EditState {
   editError: string;
 }
 
+interface FeedbackMessage {
+  message: string;
+  type: "success" | "error";
+  taskId?: number;
+}
+
 export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -34,11 +40,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     editTitle: "",
     editError: "",
   });
+  const [feedback, setFeedback] = useState<FeedbackMessage | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
 
   useEffect(() => {
     fetchTasks();
   }, []);
+
+  useEffect(() => {
+    if (feedback) {
+      const timer = setTimeout(() => {
+        setFeedback(null);
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [feedback]);
 
   const fetchTasks = async (): Promise<void> => {
     setLoading(true);
@@ -128,6 +144,27 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     }
   };
 
+  const handleDeleteTask = async (taskId: number): Promise<void> => {
+    try {
+      await taskService.deleteTask(taskId);
+
+      setTasks((prevTasks) => prevTasks.filter((task) => task.id !== taskId));
+
+      setFeedback({
+        message: "Task deleted successfully",
+        type: "success",
+        taskId,
+      });
+    } catch (err) {
+      console.error("Error deleting task:", err);
+      setFeedback({
+        message: "Failed to delete task",
+        type: "error",
+        taskId,
+      });
+    }
+  };
+
   const handleLogout = async (): Promise<void> => {
     try {
       await authService.removeToken();
@@ -190,12 +227,20 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
               {item.completed ? "Done" : "Open"}
             </Text>
           </View>
-          <TouchableOpacity
-            style={styles.editButton}
-            onPress={() => handleEditStart(item)}
-          >
-            <Text style={styles.editButtonLabel}>Edit</Text>
-          </TouchableOpacity>
+          <View style={styles.taskActionButtons}>
+            <TouchableOpacity
+              style={styles.editButton}
+              onPress={() => handleEditStart(item)}
+            >
+              <Text style={styles.editButtonLabel}>Edit</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.deleteButton}
+              onPress={() => handleDeleteTask(item.id)}
+            >
+              <Text style={styles.deleteButtonLabel}>Delete</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     );
@@ -210,6 +255,19 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         showsVerticalScrollIndicator={true}
       >
         <Text style={styles.title}>Logged in successfully</Text>
+
+        {feedback ? (
+          <View
+            style={[
+              styles.feedbackContainer,
+              feedback.type === "success"
+                ? styles.feedbackSuccess
+                : styles.feedbackError,
+            ]}
+          >
+            <Text style={styles.feedbackText}>{feedback.message}</Text>
+          </View>
+        ) : null}
 
         {loading ? (
           <ActivityIndicator
@@ -320,6 +378,28 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
   },
+  feedbackContainer: {
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    borderRadius: 6,
+    marginBottom: 15,
+    alignItems: "center",
+  },
+  feedbackSuccess: {
+    backgroundColor: "#34C75933",
+    borderLeftWidth: 4,
+    borderLeftColor: "#34C759",
+  },
+  feedbackError: {
+    backgroundColor: "#FF3B3033",
+    borderLeftWidth: 4,
+    borderLeftColor: "#FF3B30",
+  },
+  feedbackText: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: "#333",
+  },
   formContainer: {
     backgroundColor: "#fff",
     borderRadius: 8,
@@ -410,6 +490,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#FF9500",
     color: "#fff",
   },
+  taskActionButtons: {
+    flexDirection: "row",
+    gap: 8,
+  },
   editButton: {
     backgroundColor: "#007AFF",
     paddingHorizontal: 12,
@@ -417,6 +501,17 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   editButtonLabel: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  deleteButton: {
+    backgroundColor: "#FF3B30",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
+  deleteButtonLabel: {
     color: "#fff",
     fontSize: 12,
     fontWeight: "600",

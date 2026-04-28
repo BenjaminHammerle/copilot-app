@@ -55,4 +55,24 @@ export const taskService = {
       throw error;
     }
   },
+
+  async deleteTask(id: number): Promise<void> {
+    try {
+      const response = await fetch(`${MOCK_API_URL}/${id}`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      console.log(`Task ${id} deleted successfully`);
+    } catch (error) {
+      console.error(`Error deleting task ${id}:`, error);
+      throw error;
+    }
+  },
 };
