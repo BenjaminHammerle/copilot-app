@@ -17,12 +17,23 @@ interface HomeScreenProps {
   onLogout: () => void;
 }
 
+interface EditState {
+  taskId: number | null;
+  editTitle: string;
+  editError: string;
+}
+
 export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>("");
   const [taskTitle, setTaskTitle] = useState<string>("");
   const [validationError, setValidationError] = useState<string>("");
+  const [editState, setEditState] = useState<EditState>({
+    taskId: null,
+    editTitle: "",
+    editError: "",
+  });
   const scrollViewRef = useRef<ScrollView>(null);
 
   useEffect(() => {
@@ -74,6 +85,49 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     }, 100);
   };
 
+  const handleEditStart = (task: Task): void => {
+    setEditState({
+      taskId: task.id,
+      editTitle: task.title,
+      editError: "",
+    });
+  };
+
+  const handleEditCancel = (): void => {
+    setEditState({ taskId: null, editTitle: "", editError: "" });
+  };
+
+  const handleEditSave = async (taskId: number): Promise<void> => {
+    const validationResult = validateTaskTitle(editState.editTitle);
+    if (validationResult) {
+      setEditState((prev) => ({
+        ...prev,
+        editError: validationResult.message,
+      }));
+      return;
+    }
+
+    try {
+      await taskService.updateTask(taskId, editState.editTitle.trim());
+
+      setTasks((prevTasks) =>
+        prevTasks.map((task) =>
+          task.id === taskId
+            ? { ...task, title: editState.editTitle.trim() }
+            : task,
+        ),
+      );
+
+      setEditState({ taskId: null, editTitle: "", editError: "" });
+    } catch (err) {
+      console.error("Error updating task:", err);
+      setEditState((prev) => ({
+        ...prev,
+        editError: "Failed to update task",
+      }));
+    }
+  };
+
   const handleLogout = async (): Promise<void> => {
     try {
       await authService.removeToken();
@@ -83,21 +137,69 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     }
   };
 
-  const renderTaskItem = ({ item }: { item: Task }): React.ReactElement => (
-    <View style={styles.taskItem}>
-      <View style={styles.taskContent}>
-        <Text style={styles.taskTitle}>{item.title}</Text>
-        <Text
-          style={[
-            styles.taskStatus,
-            item.completed ? styles.statusDone : styles.statusOpen,
-          ]}
-        >
-          {item.completed ? "Done" : "Open"}
-        </Text>
+  const renderTaskItem = ({ item }: { item: Task }): React.ReactElement => {
+    const isEditing = editState.taskId === item.id;
+
+    if (isEditing) {
+      return (
+        <View style={styles.taskItem}>
+          <View style={styles.editContainer}>
+            <TextInput
+              style={styles.editInput}
+              value={editState.editTitle}
+              onChangeText={(text) =>
+                setEditState((prev) => ({ ...prev, editTitle: text }))
+              }
+              placeholder="Edit task title"
+              placeholderTextColor="#999"
+              autoFocus
+            />
+            {editState.editError ? (
+              <Text style={styles.editError}>{editState.editError}</Text>
+            ) : null}
+            <View style={styles.editButtonsContainer}>
+              <TouchableOpacity
+                style={styles.saveButton}
+                onPress={() => handleEditSave(item.id)}
+              >
+                <Text style={styles.saveButtonText}>Save</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={handleEditCancel}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.taskItem}>
+        <View style={styles.taskContent}>
+          <View style={styles.taskInfo}>
+            <Text style={styles.taskTitle}>{item.title}</Text>
+            <Text
+              style={[
+                styles.taskStatus,
+                item.completed ? styles.statusDone : styles.statusOpen,
+              ]}
+            >
+              {item.completed ? "Done" : "Open"}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={styles.editButton}
+            onPress={() => handleEditStart(item)}
+          >
+            <Text style={styles.editButtonLabel}>Edit</Text>
+          </TouchableOpacity>
+        </View>
       </View>
-    </View>
-  );
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -283,11 +385,14 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
   },
+  taskInfo: {
+    flex: 1,
+    marginRight: 10,
+  },
   taskTitle: {
     fontSize: 14,
     color: "#333",
-    flex: 1,
-    marginRight: 10,
+    marginBottom: 8,
   },
   taskStatus: {
     fontSize: 12,
@@ -295,6 +400,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 4,
+    alignSelf: "flex-start",
   },
   statusDone: {
     backgroundColor: "#34C759",
@@ -303,6 +409,65 @@ const styles = StyleSheet.create({
   statusOpen: {
     backgroundColor: "#FF9500",
     color: "#fff",
+  },
+  editButton: {
+    backgroundColor: "#007AFF",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
+  editButtonLabel: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  editContainer: {
+    width: "100%",
+  },
+  editInput: {
+    borderWidth: 1,
+    borderColor: "#007AFF",
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    marginBottom: 8,
+    color: "#333",
+  },
+  editError: {
+    color: "#FF3B30",
+    fontSize: 12,
+    marginBottom: 8,
+  },
+  editButtonsContainer: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  saveButton: {
+    flex: 1,
+    backgroundColor: "#34C759",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 6,
+    alignItems: "center",
+  },
+  saveButtonText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  cancelButton: {
+    flex: 1,
+    backgroundColor: "#FF3B30",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 6,
+    alignItems: "center",
+  },
+  cancelButtonText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "600",
   },
   emptyText: {
     textAlign: "center",

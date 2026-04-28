@@ -34,4 +34,25 @@ export const taskService = {
       completed: false,
     };
   },
+
+  async updateTask(id: number, title: string): Promise<void> {
+    try {
+      const response = await fetch(`${MOCK_API_URL}/${id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ title }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      console.log(`Task ${id} updated successfully`);
+    } catch (error) {
+      console.error(`Error updating task ${id}:`, error);
+      throw error;
+    }
+  },
 };
