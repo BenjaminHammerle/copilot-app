@@ -19,4 +19,19 @@ export const taskService = {
       throw error;
     }
   },
+
+  generateTaskId(existingTasks: Task[]): number {
+    if (existingTasks.length === 0) {
+      return 1;
+    }
+    return Math.max(...existingTasks.map((task) => task.id)) + 1;
+  },
+
+  createTask(title: string, existingTasks: Task[]): Task {
+    return {
+      id: this.generateTaskId(existingTasks),
+      title,
+      completed: false,
+    };
+  },
 };
