@@ -11,6 +11,7 @@ module.exports = defineConfig([
       sonarjs,
     },
     rules: {
+      ...sonarjs.configs.recommended.rules,
       // Zyklomatische Komplexität
       complexity: ["warn", 10],
 
@@ -18,6 +19,9 @@ module.exports = defineConfig([
       "sonarjs/cognitive-complexity": ["warn", 10],
       "sonarjs/no-duplicate-string": "warn",
       "sonarjs/no-identical-functions": "warn",
+      "sonarjs/no-all-duplicated-branches": "warn",
+      "sonarjs/no-identical-expressions": "warn",
+      "sonarjs/no-redundant-boolean": "warn",
     },
   },
 
