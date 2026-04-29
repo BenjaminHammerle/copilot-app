@@ -1,7 +1,9 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Task } from "../types/task";
 
 const MOCK_API_URL = "https://jsonplaceholder.typicode.com/todos";
 const TASK_LIMIT = 10;
+const TASKS_CACHE_KEY = "TASKS_CACHE";
 
 export const taskService = {
   async getTasks(): Promise<Task[]> {
@@ -13,10 +15,11 @@ export const taskService = {
       }
 
       const tasks: Task[] = await response.json();
+      await saveTasksToCache(tasks);
       return tasks;
     } catch (error) {
       console.error("Error fetching tasks:", error);
-      throw error;
+      return await loadTasksFromCache();
     }
   },
 
@@ -75,4 +78,39 @@ export const taskService = {
       throw error;
     }
   },
+};
+
+export const saveTasksToCache = async (tasks: Task[]): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(TASKS_CACHE_KEY, JSON.stringify(tasks));
+  } catch (error) {
+    console.error("Error saving tasks to cache", error);
+  }
+};
+
+export const loadTasksFromCache = async (): Promise<Task[]> => {
+  try {
+    const data = await AsyncStorage.getItem(TASKS_CACHE_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch (error) {
+    console.error("Error loading tasks from cache", error);
+    return [];
+  }
+};
+
+export const refreshTasksFromApi = async (): Promise<Task[]> => {
+  try {
+    const response = await fetch(`${MOCK_API_URL}?_limit=${TASK_LIMIT}`);
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const tasks: Task[] = await response.json();
+    await saveTasksToCache(tasks);
+    return tasks;
+  } catch (error) {
+    console.error("Error refreshing tasks from API:", error);
+    throw error;
+  }
 };

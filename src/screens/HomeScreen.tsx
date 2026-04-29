@@ -10,7 +10,12 @@ import {
   View,
 } from "react-native";
 import { authService } from "../services/authService";
-import { taskService } from "../services/taskService";
+import {
+  loadTasksFromCache,
+  refreshTasksFromApi,
+  saveTasksToCache,
+  taskService,
+} from "../services/taskService";
 import { Task, ValidationError } from "../types/task";
 
 type FilterType = "all" | "open" | "completed";
@@ -43,6 +48,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     editTitle: "",
     editError: "",
   });
+  const [isOffline, setIsOffline] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<FeedbackMessage | null>(null);
   const [filterType, setFilterType] = useState<FilterType>("all");
   const [sortType, setSortType] = useState<SortType>("title-asc");
@@ -64,9 +70,23 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const fetchTasks = async (): Promise<void> => {
     setLoading(true);
     setError("");
+
+    // Load from cache first - cache is the source of truth
+    const cachedTasks = await loadTasksFromCache();
+
+    if (cachedTasks.length > 0) {
+      // Cache has tasks - use them and don't refresh from API
+      setTasks(cachedTasks);
+      setIsOffline(false);
+      setLoading(false);
+      return;
+    }
+
+    // Cache is empty - only fetch from API on first load
     try {
-      const fetchedTasks = await taskService.getTasks();
-      setTasks(fetchedTasks);
+      const freshTasks = await refreshTasksFromApi();
+      setTasks(freshTasks);
+      setIsOffline(false);
     } catch (err) {
       setError("Failed to load tasks");
       console.error("Error fetching tasks:", err);
@@ -112,7 +132,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     return null;
   };
 
-  const handleAddTask = (): void => {
+  const handleAddTask = async (): Promise<void> => {
     setValidationError("");
 
     const validationResult = validateTaskTitle(taskTitle);
@@ -122,7 +142,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     }
 
     const newTask = taskService.createTask(taskTitle.trim(), tasks);
-    setTasks([newTask, ...tasks]);
+    const updatedTasks = [newTask, ...tasks];
+    setTasks(updatedTasks);
+    await saveTasksToCache(updatedTasks);
     setTaskTitle("");
 
     setTimeout(() => {
@@ -154,44 +176,41 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
     try {
       await taskService.updateTask(taskId, editState.editTitle.trim());
-
-      setTasks((prevTasks) =>
-        prevTasks.map((task) =>
-          task.id === taskId
-            ? { ...task, title: editState.editTitle.trim() }
-            : task,
-        ),
-      );
-
-      setEditState({ taskId: null, editTitle: "", editError: "" });
     } catch (err) {
-      console.error("Error updating task:", err);
-      setEditState((prev) => ({
-        ...prev,
-        editError: "Failed to update task",
-      }));
+      console.error("Error updating task on API:", err);
     }
+
+    setTasks((prevTasks) => {
+      const updatedTasks = prevTasks.map((task) =>
+        task.id === taskId
+          ? { ...task, title: editState.editTitle.trim() }
+          : task,
+      );
+      saveTasksToCache(updatedTasks);
+      return updatedTasks;
+    });
+
+    setEditState({ taskId: null, editTitle: "", editError: "" });
   };
 
   const handleDeleteTask = async (taskId: number): Promise<void> => {
     try {
       await taskService.deleteTask(taskId);
-
-      setTasks((prevTasks) => prevTasks.filter((task) => task.id !== taskId));
-
-      setFeedback({
-        message: "Task deleted successfully",
-        type: "success",
-        taskId,
-      });
     } catch (err) {
-      console.error("Error deleting task:", err);
-      setFeedback({
-        message: "Failed to delete task",
-        type: "error",
-        taskId,
-      });
+      console.error("Error deleting task on API:", err);
     }
+
+    setTasks((prevTasks) => {
+      const updatedTasks = prevTasks.filter((task) => task.id !== taskId);
+      saveTasksToCache(updatedTasks);
+      return updatedTasks;
+    });
+
+    setFeedback({
+      message: "Task deleted successfully",
+      type: "success",
+      taskId,
+    });
   };
 
   const handleLogout = async (): Promise<void> => {
@@ -299,6 +318,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
             <Text style={styles.feedbackText}>{feedback.message}</Text>
           </View>
         ) : null}
+
+        {isOffline && (
+          <View style={styles.offlineIndicator}>
+            <Text style={styles.offlineText}>
+              Offline mode – showing cached tasks
+            </Text>
+          </View>
+        )}
 
         {loading ? (
           <ActivityIndicator
@@ -789,5 +816,19 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "600",
+  },
+  offlineIndicator: {
+    backgroundColor: "#FFF3CD",
+    borderLeftWidth: 4,
+    borderLeftColor: "#FF9500",
+    paddingHorizontal: 15,
+    paddingVertical: 10,
+    borderRadius: 6,
+    marginBottom: 15,
+  },
+  offlineText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#FF9500",
   },
 });
