@@ -13,6 +13,9 @@ import { authService } from "../services/authService";
 import { taskService } from "../services/taskService";
 import { Task, ValidationError } from "../types/task";
 
+type FilterType = "all" | "open" | "completed";
+type SortType = "title-asc" | "title-desc";
+
 interface HomeScreenProps {
   onLogout: () => void;
 }
@@ -41,6 +44,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     editError: "",
   });
   const [feedback, setFeedback] = useState<FeedbackMessage | null>(null);
+  const [filterType, setFilterType] = useState<FilterType>("all");
+  const [sortType, setSortType] = useState<SortType>("title-asc");
   const scrollViewRef = useRef<ScrollView>(null);
 
   useEffect(() => {
@@ -68,6 +73,30 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const getFilteredAndSortedTasks = (): Task[] => {
+    // Apply filter
+    let filtered: Task[] = tasks;
+    if (filterType === "open") {
+      filtered = tasks.filter((task) => !task.completed);
+    } else if (filterType === "completed") {
+      filtered = tasks.filter((task) => task.completed);
+    }
+
+    // Apply sort
+    const sorted = [...filtered];
+    if (sortType === "title-asc") {
+      sorted.sort((a, b) =>
+        a.title.toLowerCase().localeCompare(b.title.toLowerCase()),
+      );
+    } else if (sortType === "title-desc") {
+      sorted.sort((a, b) =>
+        b.title.toLowerCase().localeCompare(a.title.toLowerCase()),
+      );
+    }
+
+    return sorted;
   };
 
   const validateTaskTitle = (title: string): ValidationError | null => {
@@ -246,6 +275,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     );
   };
 
+  const displayedTasks = getFilteredAndSortedTasks();
+
   return (
     <View style={styles.container}>
       <ScrollView
@@ -306,15 +337,114 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
               ) : null}
             </View>
 
+            {/* FILTER AND SORT CONTROLS */}
+            <View style={styles.controlsContainer}>
+              <View style={styles.filterSection}>
+                <Text style={styles.controlLabel}>Filter:</Text>
+                <View style={styles.filterButtonsRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.filterButton,
+                      filterType === "all" && styles.filterButtonActive,
+                    ]}
+                    onPress={() => setFilterType("all")}
+                  >
+                    <Text
+                      style={[
+                        styles.filterButtonText,
+                        filterType === "all" && styles.filterButtonTextActive,
+                      ]}
+                    >
+                      All
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.filterButton,
+                      filterType === "open" && styles.filterButtonActive,
+                    ]}
+                    onPress={() => setFilterType("open")}
+                  >
+                    <Text
+                      style={[
+                        styles.filterButtonText,
+                        filterType === "open" && styles.filterButtonTextActive,
+                      ]}
+                    >
+                      Open
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.filterButton,
+                      filterType === "completed" && styles.filterButtonActive,
+                    ]}
+                    onPress={() => setFilterType("completed")}
+                  >
+                    <Text
+                      style={[
+                        styles.filterButtonText,
+                        filterType === "completed" &&
+                          styles.filterButtonTextActive,
+                      ]}
+                    >
+                      Done
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.sortSection}>
+                <Text style={styles.controlLabel}>Sort:</Text>
+                <View style={styles.sortButtonsRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.sortButton,
+                      sortType === "title-asc" && styles.sortButtonActive,
+                    ]}
+                    onPress={() => setSortType("title-asc")}
+                  >
+                    <Text
+                      style={[
+                        styles.sortButtonText,
+                        sortType === "title-asc" && styles.sortButtonTextActive,
+                      ]}
+                    >
+                      A-Z
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.sortButton,
+                      sortType === "title-desc" && styles.sortButtonActive,
+                    ]}
+                    onPress={() => setSortType("title-desc")}
+                  >
+                    <Text
+                      style={[
+                        styles.sortButtonText,
+                        sortType === "title-desc" &&
+                          styles.sortButtonTextActive,
+                      ]}
+                    >
+                      Z-A
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+
             <View style={styles.listContainer}>
-              <Text style={styles.listTitle}>Tasks ({tasks.length})</Text>
+              <Text style={styles.listTitle}>
+                Tasks ({displayedTasks.length})
+              </Text>
               <FlatList
-                data={tasks}
+                data={displayedTasks}
                 renderItem={renderTaskItem}
                 keyExtractor={(item) => item.id.toString()}
                 scrollEnabled={false}
                 ListEmptyComponent={
-                  <Text style={styles.emptyText}>No tasks yet</Text>
+                  <Text style={styles.emptyText}>No tasks to display</Text>
                 }
               />
             </View>
@@ -444,6 +574,80 @@ const styles = StyleSheet.create({
     color: "#FF3B30",
     fontSize: 12,
   },
+  // NEW FILTER AND SORT STYLES
+  controlsContainer: {
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    padding: 15,
+    marginBottom: 20,
+    borderLeftWidth: 4,
+    borderLeftColor: "#007AFF",
+  },
+  filterSection: {
+    marginBottom: 15,
+  },
+  sortSection: {
+    marginBottom: 0,
+  },
+  controlLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
+    marginBottom: 8,
+  },
+  filterButtonsRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  filterButton: {
+    flex: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    backgroundColor: "#f9f9f9",
+    alignItems: "center",
+  },
+  filterButtonActive: {
+    backgroundColor: "#FF9500",
+    borderColor: "#FF9500",
+  },
+  filterButtonText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#333",
+  },
+  filterButtonTextActive: {
+    color: "#fff",
+  },
+  sortButtonsRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  sortButton: {
+    flex: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "#ddd",
+    backgroundColor: "#f9f9f9",
+    alignItems: "center",
+  },
+  sortButtonActive: {
+    backgroundColor: "#007AFF",
+    borderColor: "#007AFF",
+  },
+  sortButtonText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#333",
+  },
+  sortButtonTextActive: {
+    color: "#fff",
+  },
+  // END NEW STYLES
   listContainer: {
     marginBottom: 20,
   },
