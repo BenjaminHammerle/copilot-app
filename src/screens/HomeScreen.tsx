@@ -15,8 +15,9 @@ import {
   refreshTasksFromApi,
   saveTasksToCache,
   taskService,
+  TaskServiceError,
 } from "../services/taskService";
-import { Task, ValidationError } from "../types/task";
+import { Task } from "../types/task";
 
 type FilterType = "all" | "open" | "completed";
 type SortType = "title-asc" | "title-desc";
@@ -29,12 +30,18 @@ interface EditState {
   taskId: number | null;
   editTitle: string;
   editError: string;
+  isLoading: boolean;
 }
 
 interface FeedbackMessage {
   message: string;
   type: "success" | "error";
   taskId?: number;
+}
+
+interface OperationLoading {
+  taskId?: number;
+  operation: "create" | "update" | "delete" | null;
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
@@ -47,12 +54,19 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     taskId: null,
     editTitle: "",
     editError: "",
+    isLoading: false,
   });
   const [isOffline, setIsOffline] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<FeedbackMessage | null>(null);
   const [filterType, setFilterType] = useState<FilterType>("all");
   const [sortType, setSortType] = useState<SortType>("title-asc");
+  const [operationLoading, setOperationLoading] = useState<OperationLoading>({
+    taskId: undefined,
+    operation: null,
+  });
+  const [isCreating, setIsCreating] = useState<boolean>(false);
   const scrollViewRef = useRef<ScrollView>(null);
+  const feedbackTimeoutRef = useRef<NodeJS.Timeout>();
 
   useEffect(() => {
     fetchTasks();
@@ -60,43 +74,66 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
   useEffect(() => {
     if (feedback) {
-      const timer = setTimeout(() => {
+      if (feedbackTimeoutRef.current) {
+        clearTimeout(feedbackTimeoutRef.current);
+      }
+      feedbackTimeoutRef.current = setTimeout(() => {
         setFeedback(null);
-      }, 2000);
-      return () => clearTimeout(timer);
+      }, 2500);
     }
+    return () => {
+      if (feedbackTimeoutRef.current) {
+        clearTimeout(feedbackTimeoutRef.current);
+      }
+    };
   }, [feedback]);
 
+  const showFeedback = (
+    message: string,
+    type: "success" | "error",
+    taskId?: number,
+  ) => {
+    setFeedback({ message, type, taskId });
+  };
+
   const fetchTasks = async (): Promise<void> => {
-    setLoading(true);
-    setError("");
-
-    // Load from cache first - cache is the source of truth
-    const cachedTasks = await loadTasksFromCache();
-
-    if (cachedTasks.length > 0) {
-      // Cache has tasks - use them and don't refresh from API
-      setTasks(cachedTasks);
-      setIsOffline(false);
-      setLoading(false);
-      return;
-    }
-
-    // Cache is empty - only fetch from API on first load
     try {
+      setLoading(true);
+      setError("");
+      setIsOffline(false);
+
+      // Load from cache first - cache is the source of truth
+      const cachedTasks = await loadTasksFromCache();
+
+      if (cachedTasks.length > 0) {
+        // Cache has tasks - use them
+        setTasks(cachedTasks);
+        setLoading(false);
+        return;
+      }
+
+      // Cache is empty - fetch from API on first load
       const freshTasks = await refreshTasksFromApi();
       setTasks(freshTasks);
-      setIsOffline(false);
     } catch (err) {
-      setError("Failed to load tasks");
       console.error("Error fetching tasks:", err);
+
+      if (err instanceof TaskServiceError && err.isOffline) {
+        setIsOffline(true);
+        // Try to load from cache as fallback
+        const cachedTasks = await loadTasksFromCache();
+        setTasks(cachedTasks);
+        setError("");
+      } else {
+        setError("Failed to load tasks. Please try again.");
+        setTasks([]);
+      }
     } finally {
       setLoading(false);
     }
   };
 
   const getFilteredAndSortedTasks = (): Task[] => {
-    // Apply filter
     let filtered: Task[] = tasks;
     if (filterType === "open") {
       filtered = tasks.filter((task) => !task.completed);
@@ -104,7 +141,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       filtered = tasks.filter((task) => task.completed);
     }
 
-    // Apply sort
     const sorted = [...filtered];
     if (sortType === "title-asc") {
       sorted.sort((a, b) =>
@@ -119,15 +155,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     return sorted;
   };
 
-  const validateTaskTitle = (title: string): ValidationError | null => {
+  const validateTaskTitle = (title: string): string | null => {
     if (!title || title.trim().length === 0) {
-      return { field: "title", message: "Task title is required" };
+      return "Task title is required";
     }
     if (title.trim().length < 3) {
-      return {
-        field: "title",
-        message: "Task title must be at least 3 characters",
-      };
+      return "Task title must be at least 3 characters";
     }
     return null;
   };
@@ -135,21 +168,38 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const handleAddTask = async (): Promise<void> => {
     setValidationError("");
 
-    const validationResult = validateTaskTitle(taskTitle);
-    if (validationResult) {
-      setValidationError(validationResult.message);
+    const validationError = validateTaskTitle(taskTitle);
+    if (validationError) {
+      setValidationError(validationError);
       return;
     }
 
-    const newTask = taskService.createTask(taskTitle.trim(), tasks);
-    const updatedTasks = [newTask, ...tasks];
-    setTasks(updatedTasks);
-    await saveTasksToCache(updatedTasks);
-    setTaskTitle("");
+    setIsCreating(true);
+    try {
+      // Validate in service layer as well
+      const newTask = taskService.createTask(taskTitle.trim(), tasks);
+      const updatedTasks = [newTask, ...tasks];
 
-    setTimeout(() => {
-      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
-    }, 100);
+      setTasks(updatedTasks);
+      await saveTasksToCache(updatedTasks);
+      setTaskTitle("");
+
+      showFeedback("Task created successfully!", "success");
+
+      setTimeout(() => {
+        scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+      }, 100);
+    } catch (err) {
+      console.error("Error creating task:", err);
+
+      if (err instanceof TaskServiceError) {
+        setValidationError(err.message);
+      } else {
+        setValidationError("Failed to create task. Please try again.");
+      }
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   const handleEditStart = (task: Task): void => {
@@ -157,29 +207,60 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       taskId: task.id,
       editTitle: task.title,
       editError: "",
+      isLoading: false,
     });
   };
 
   const handleEditCancel = (): void => {
-    setEditState({ taskId: null, editTitle: "", editError: "" });
+    setEditState({
+      taskId: null,
+      editTitle: "",
+      editError: "",
+      isLoading: false,
+    });
   };
 
   const handleEditSave = async (taskId: number): Promise<void> => {
-    const validationResult = validateTaskTitle(editState.editTitle);
-    if (validationResult) {
+    const validationError = validateTaskTitle(editState.editTitle);
+    if (validationError) {
       setEditState((prev) => ({
         ...prev,
-        editError: validationResult.message,
+        editError: validationError,
       }));
       return;
     }
 
+    setEditState((prev) => ({ ...prev, isLoading: true }));
     try {
+      // Call API to update on server
       await taskService.updateTask(taskId, editState.editTitle.trim());
     } catch (err) {
       console.error("Error updating task on API:", err);
+
+      // If it's an offline error, that's ok - we'll update locally
+      if (err instanceof TaskServiceError && err.isOffline) {
+        // Continue with local update
+      } else if (
+        err instanceof TaskServiceError &&
+        err.code === "VALIDATION_ERROR"
+      ) {
+        setEditState((prev) => ({
+          ...prev,
+          editError: err.message,
+          isLoading: false,
+        }));
+        return;
+      } else {
+        setEditState((prev) => ({
+          ...prev,
+          editError: "Failed to update task. Please try again.",
+          isLoading: false,
+        }));
+        return;
+      }
     }
 
+    // Update local state
     setTasks((prevTasks) => {
       const updatedTasks = prevTasks.map((task) =>
         task.id === taskId
@@ -190,27 +271,71 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       return updatedTasks;
     });
 
-    setEditState({ taskId: null, editTitle: "", editError: "" });
+    showFeedback("Task updated successfully!", "success");
+    setEditState({
+      taskId: null,
+      editTitle: "",
+      editError: "",
+      isLoading: false,
+    });
   };
 
   const handleDeleteTask = async (taskId: number): Promise<void> => {
+    setOperationLoading({ taskId, operation: "delete" });
     try {
+      // Call API to delete on server
       await taskService.deleteTask(taskId);
     } catch (err) {
       console.error("Error deleting task on API:", err);
+
+      // If it's an offline error, that's ok - we'll delete locally
+      if (!(err instanceof TaskServiceError && err.isOffline)) {
+        if (err instanceof TaskServiceError) {
+          showFeedback(err.message, "error");
+        } else {
+          showFeedback("Failed to delete task. Please try again.", "error");
+        }
+        setOperationLoading({ taskId: undefined, operation: null });
+        return;
+      }
     }
 
+    // Update local state
     setTasks((prevTasks) => {
       const updatedTasks = prevTasks.filter((task) => task.id !== taskId);
       saveTasksToCache(updatedTasks);
       return updatedTasks;
     });
 
-    setFeedback({
-      message: "Task deleted successfully",
-      type: "success",
-      taskId,
+    showFeedback("Task deleted successfully!", "success");
+    setOperationLoading({ taskId: undefined, operation: null });
+  };
+
+  const handleToggleComplete = async (task: Task): Promise<void> => {
+    setOperationLoading({ taskId: task.id, operation: "update" });
+    try {
+      const newTitle = task.title;
+      await taskService.updateTask(task.id, newTitle);
+    } catch (err) {
+      console.error("Error toggling task status:", err);
+      // If offline, still allow local toggle
+      if (!(err instanceof TaskServiceError && err.isOffline)) {
+        showFeedback("Failed to update task status", "error");
+        setOperationLoading({ taskId: undefined, operation: null });
+        return;
+      }
+    }
+
+    // Update local state
+    setTasks((prevTasks) => {
+      const updatedTasks = prevTasks.map((t) =>
+        t.id === task.id ? { ...t, completed: !t.completed } : t,
+      );
+      saveTasksToCache(updatedTasks);
+      return updatedTasks;
     });
+
+    setOperationLoading({ taskId: undefined, operation: null });
   };
 
   const handleLogout = async (): Promise<void> => {
@@ -219,11 +344,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       onLogout();
     } catch (error) {
       console.error("Error during logout:", error);
+      showFeedback("Error during logout", "error");
     }
   };
 
   const renderTaskItem = ({ item }: { item: Task }): React.ReactElement => {
     const isEditing = editState.taskId === item.id;
+    const isDeleting =
+      operationLoading.operation === "delete" &&
+      operationLoading.taskId === item.id;
+    const isToggling =
+      operationLoading.operation === "update" &&
+      operationLoading.taskId === item.id;
 
     if (isEditing) {
       return (
@@ -238,20 +370,30 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
               placeholder="Edit task title"
               placeholderTextColor="#999"
               autoFocus
+              editable={!editState.isLoading}
             />
             {editState.editError ? (
               <Text style={styles.editError}>{editState.editError}</Text>
             ) : null}
             <View style={styles.editButtonsContainer}>
               <TouchableOpacity
-                style={styles.saveButton}
+                style={[
+                  styles.saveButton,
+                  editState.isLoading && styles.buttonDisabled,
+                ]}
                 onPress={() => handleEditSave(item.id)}
+                disabled={editState.isLoading}
               >
-                <Text style={styles.saveButtonText}>Save</Text>
+                {editState.isLoading ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <Text style={styles.saveButtonText}>Save</Text>
+                )}
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.cancelButton}
                 onPress={handleEditCancel}
+                disabled={editState.isLoading}
               >
                 <Text style={styles.cancelButtonText}>Cancel</Text>
               </TouchableOpacity>
@@ -263,9 +405,33 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
     return (
       <View style={styles.taskItem}>
-        <View style={styles.taskContent}>
+        <View
+          style={[styles.taskContent, isDeleting && styles.taskItemDeleting]}
+        >
+          <TouchableOpacity
+            style={styles.taskCheckbox}
+            onPress={() => handleToggleComplete(item)}
+            disabled={isToggling}
+          >
+            <View
+              style={[
+                styles.checkbox,
+                item.completed && styles.checkboxChecked,
+              ]}
+            >
+              {item.completed && <Text style={styles.checkmark}>✓</Text>}
+            </View>
+          </TouchableOpacity>
+
           <View style={styles.taskInfo}>
-            <Text style={styles.taskTitle}>{item.title}</Text>
+            <Text
+              style={[
+                styles.taskTitle,
+                item.completed && styles.taskTitleCompleted,
+              ]}
+            >
+              {item.title}
+            </Text>
             <Text
               style={[
                 styles.taskStatus,
@@ -275,18 +441,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
               {item.completed ? "Done" : "Open"}
             </Text>
           </View>
+
           <View style={styles.taskActionButtons}>
             <TouchableOpacity
-              style={styles.editButton}
+              style={[
+                styles.editButton,
+                editState.isLoading && styles.buttonDisabled,
+              ]}
               onPress={() => handleEditStart(item)}
+              disabled={isDeleting || isToggling}
             >
               <Text style={styles.editButtonLabel}>Edit</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.deleteButton}
+              style={[styles.deleteButton, isDeleting && styles.buttonDisabled]}
               onPress={() => handleDeleteTask(item.id)}
+              disabled={isDeleting || isToggling}
             >
-              <Text style={styles.deleteButtonLabel}>Delete</Text>
+              {isDeleting ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <Text style={styles.deleteButtonLabel}>Delete</Text>
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -322,17 +498,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         {isOffline && (
           <View style={styles.offlineIndicator}>
             <Text style={styles.offlineText}>
-              Offline mode – showing cached tasks
+              📡 Offline mode – showing cached tasks
             </Text>
           </View>
         )}
 
         {loading ? (
-          <ActivityIndicator
-            size="large"
-            color="#007AFF"
-            style={styles.loader}
-          />
+          <View style={styles.loaderContainer}>
+            <ActivityIndicator size="large" color="#007AFF" />
+            <Text style={styles.loaderText}>Loading tasks...</Text>
+          </View>
         ) : error ? (
           <View style={styles.errorContainer}>
             <Text style={styles.errorText}>{error}</Text>
@@ -346,17 +521,26 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
               <Text style={styles.formTitle}>Add New Task</Text>
               <View style={styles.inputContainer}>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input, isCreating && styles.inputDisabled]}
                   placeholder="Enter task title"
                   value={taskTitle}
                   onChangeText={setTaskTitle}
                   placeholderTextColor="#999"
+                  editable={!isCreating}
                 />
                 <TouchableOpacity
-                  style={styles.addButton}
+                  style={[
+                    styles.addButton,
+                    isCreating && styles.buttonDisabled,
+                  ]}
                   onPress={handleAddTask}
+                  disabled={isCreating}
                 >
-                  <Text style={styles.addButtonText}>Add</Text>
+                  {isCreating ? (
+                    <ActivityIndicator size="small" color="#FFF" />
+                  ) : (
+                    <Text style={styles.addButtonText}>Add</Text>
+                  )}
                 </TouchableOpacity>
               </View>
               {validationError ? (
@@ -500,70 +684,95 @@ const styles = StyleSheet.create({
     paddingBottom: 100,
   },
   title: {
-    fontSize: 20,
-    fontWeight: "600",
-    marginBottom: 20,
-    textAlign: "center",
+    fontSize: 24,
+    fontWeight: "bold",
+    marginBottom: 16,
+    color: "#333",
   },
-  contentContainer: {
-    flex: 1,
-  },
-  loader: {
-    flex: 1,
-    justifyContent: "center",
-    minHeight: 200,
-  },
-  errorContainer: {
-    justifyContent: "center",
+  loaderContainer: {
     alignItems: "center",
-    minHeight: 200,
+    justifyContent: "center",
+    paddingVertical: 60,
   },
-  errorText: {
-    color: "#FF3B30",
+  loaderText: {
+    marginTop: 12,
     fontSize: 16,
-    textAlign: "center",
-    marginBottom: 15,
-  },
-  retryButton: {
-    backgroundColor: "#007AFF",
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  retryButtonText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "600",
+    color: "#666",
   },
   feedbackContainer: {
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    borderRadius: 6,
-    marginBottom: 15,
-    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 8,
+    marginBottom: 16,
   },
   feedbackSuccess: {
-    backgroundColor: "#34C75933",
-    borderLeftWidth: 4,
-    borderLeftColor: "#34C759",
+    backgroundColor: "#d4edda",
+    borderColor: "#28a745",
+    borderWidth: 1,
   },
   feedbackError: {
-    backgroundColor: "#FF3B3033",
-    borderLeftWidth: 4,
-    borderLeftColor: "#FF3B30",
+    backgroundColor: "#f8d7da",
+    borderColor: "#dc3545",
+    borderWidth: 1,
   },
   feedbackText: {
     fontSize: 14,
     fontWeight: "500",
     color: "#333",
   },
-  formContainer: {
-    backgroundColor: "#fff",
+  offlineIndicator: {
+    backgroundColor: "#fff3cd",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderRadius: 8,
-    padding: 15,
+    marginBottom: 16,
+    borderColor: "#ffc107",
+    borderWidth: 1,
+  },
+  offlineText: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: "#856404",
+  },
+  errorContainer: {
+    backgroundColor: "#f8d7da",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    borderRadius: 8,
+    marginVertical: 20,
+    alignItems: "center",
+  },
+  errorText: {
+    fontSize: 14,
+    color: "#721c24",
+    marginBottom: 12,
+    textAlign: "center",
+  },
+  retryButton: {
+    backgroundColor: "#dc3545",
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    borderRadius: 6,
+  },
+  retryButtonText: {
+    color: "#FFF",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  contentContainer: {
     marginBottom: 20,
-    borderLeftWidth: 4,
-    borderLeftColor: "#34C759",
+  },
+  formContainer: {
+    backgroundColor: "#FFF",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    borderRadius: 8,
+    marginBottom: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   formTitle: {
     fontSize: 16,
@@ -573,54 +782,55 @@ const styles = StyleSheet.create({
   },
   inputContainer: {
     flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 10,
+    marginBottom: 12,
   },
   input: {
     flex: 1,
-    borderWidth: 1,
-    borderColor: "#ddd",
+    backgroundColor: "#f5f5f5",
     borderRadius: 6,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 14,
-    marginRight: 10,
+    marginRight: 8,
+    color: "#333",
+  },
+  inputDisabled: {
+    opacity: 0.6,
   },
   addButton: {
-    backgroundColor: "#34C759",
+    backgroundColor: "#007AFF",
     paddingHorizontal: 20,
-    paddingVertical: 10,
     borderRadius: 6,
+    justifyContent: "center",
+    alignItems: "center",
+    minWidth: 60,
   },
   addButtonText: {
-    color: "#fff",
+    color: "#FFF",
     fontSize: 14,
     fontWeight: "600",
   },
   validationError: {
-    color: "#FF3B30",
     fontSize: 12,
+    color: "#dc3545",
+    marginTop: 8,
   },
-  // NEW FILTER AND SORT STYLES
   controlsContainer: {
-    backgroundColor: "#fff",
+    backgroundColor: "#FFF",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderRadius: 8,
-    padding: 15,
-    marginBottom: 20,
-    borderLeftWidth: 4,
-    borderLeftColor: "#007AFF",
-  },
-  filterSection: {
-    marginBottom: 15,
-  },
-  sortSection: {
-    marginBottom: 0,
+    marginBottom: 16,
   },
   controlLabel: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: "600",
-    color: "#333",
+    color: "#666",
     marginBottom: 8,
+    textTransform: "uppercase",
+  },
+  filterSection: {
+    marginBottom: 12,
   },
   filterButtonsRow: {
     flexDirection: "row",
@@ -630,24 +840,25 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 12,
     paddingVertical: 8,
+    backgroundColor: "#f5f5f5",
     borderRadius: 6,
     borderWidth: 1,
     borderColor: "#ddd",
-    backgroundColor: "#f9f9f9",
-    alignItems: "center",
   },
   filterButtonActive: {
-    backgroundColor: "#FF9500",
-    borderColor: "#FF9500",
+    backgroundColor: "#007AFF",
+    borderColor: "#007AFF",
   },
   filterButtonText: {
     fontSize: 12,
-    fontWeight: "600",
-    color: "#333",
+    fontWeight: "500",
+    color: "#666",
+    textAlign: "center",
   },
   filterButtonTextActive: {
-    color: "#fff",
+    color: "#FFF",
   },
+  sortSection: {},
   sortButtonsRow: {
     flexDirection: "row",
     gap: 8,
@@ -656,11 +867,10 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 12,
     paddingVertical: 8,
+    backgroundColor: "#f5f5f5",
     borderRadius: 6,
     borderWidth: 1,
     borderColor: "#ddd",
-    backgroundColor: "#f9f9f9",
-    alignItems: "center",
   },
   sortButtonActive: {
     backgroundColor: "#007AFF",
@@ -668,58 +878,87 @@ const styles = StyleSheet.create({
   },
   sortButtonText: {
     fontSize: 12,
-    fontWeight: "600",
-    color: "#333",
+    fontWeight: "500",
+    color: "#666",
+    textAlign: "center",
   },
   sortButtonTextActive: {
-    color: "#fff",
+    color: "#FFF",
   },
-  // END NEW STYLES
   listContainer: {
     marginBottom: 20,
   },
   listTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "600",
-    marginBottom: 15,
+    marginBottom: 12,
+    color: "#333",
   },
   taskItem: {
-    backgroundColor: "#fff",
+    backgroundColor: "#FFF",
+    marginBottom: 12,
     borderRadius: 8,
-    padding: 15,
-    marginBottom: 10,
-    borderLeftWidth: 4,
-    borderLeftColor: "#007AFF",
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  taskItemDeleting: {
+    opacity: 0.6,
   },
   taskContent: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 12,
+  },
+  taskCheckbox: {
+    padding: 4,
+  },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: "#ddd",
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#FFF",
+  },
+  checkboxChecked: {
+    backgroundColor: "#28a745",
+    borderColor: "#28a745",
+  },
+  checkmark: {
+    color: "#FFF",
+    fontSize: 16,
+    fontWeight: "bold",
   },
   taskInfo: {
     flex: 1,
-    marginRight: 10,
   },
   taskTitle: {
-    fontSize: 14,
+    fontSize: 16,
+    fontWeight: "500",
     color: "#333",
-    marginBottom: 8,
+    marginBottom: 4,
+  },
+  taskTitleCompleted: {
+    textDecorationLine: "line-through",
+    color: "#999",
   },
   taskStatus: {
     fontSize: 12,
-    fontWeight: "600",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-    alignSelf: "flex-start",
-  },
-  statusDone: {
-    backgroundColor: "#34C759",
-    color: "#fff",
+    fontWeight: "500",
   },
   statusOpen: {
-    backgroundColor: "#FF9500",
-    color: "#fff",
+    color: "#ff9800",
+  },
+  statusDone: {
+    color: "#28a745",
   },
   taskActionButtons: {
     flexDirection: "row",
@@ -728,31 +967,33 @@ const styles = StyleSheet.create({
   editButton: {
     backgroundColor: "#007AFF",
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 6,
+    paddingVertical: 6,
+    borderRadius: 4,
   },
   editButtonLabel: {
-    color: "#fff",
+    color: "#FFF",
     fontSize: 12,
     fontWeight: "600",
   },
   deleteButton: {
-    backgroundColor: "#FF3B30",
+    backgroundColor: "#dc3545",
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 6,
+    paddingVertical: 6,
+    borderRadius: 4,
   },
   deleteButtonLabel: {
-    color: "#fff",
+    color: "#FFF",
     fontSize: 12,
     fontWeight: "600",
   },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
   editContainer: {
-    width: "100%",
+    padding: 12,
   },
   editInput: {
-    borderWidth: 1,
-    borderColor: "#007AFF",
+    backgroundColor: "#f5f5f5",
     borderRadius: 6,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -761,74 +1002,59 @@ const styles = StyleSheet.create({
     color: "#333",
   },
   editError: {
-    color: "#FF3B30",
     fontSize: 12,
+    color: "#dc3545",
     marginBottom: 8,
   },
   editButtonsContainer: {
     flexDirection: "row",
-    gap: 10,
+    gap: 8,
   },
   saveButton: {
     flex: 1,
-    backgroundColor: "#34C759",
-    paddingHorizontal: 12,
+    backgroundColor: "#28a745",
     paddingVertical: 10,
     borderRadius: 6,
     alignItems: "center",
+    justifyContent: "center",
   },
   saveButtonText: {
-    color: "#fff",
+    color: "#FFF",
     fontSize: 14,
     fontWeight: "600",
   },
   cancelButton: {
     flex: 1,
-    backgroundColor: "#FF3B30",
-    paddingHorizontal: 12,
+    backgroundColor: "#6c757d",
     paddingVertical: 10,
     borderRadius: 6,
     alignItems: "center",
+    justifyContent: "center",
   },
   cancelButtonText: {
-    color: "#fff",
+    color: "#FFF",
     fontSize: 14,
     fontWeight: "600",
   },
   emptyText: {
-    textAlign: "center",
-    color: "#999",
     fontSize: 14,
-    marginTop: 20,
+    color: "#999",
+    textAlign: "center",
+    paddingVertical: 20,
   },
   logoutButton: {
     position: "absolute",
     bottom: 20,
     left: 20,
     right: 20,
-    backgroundColor: "#FF3B30",
-    paddingHorizontal: 30,
+    backgroundColor: "#dc3545",
     paddingVertical: 12,
-    borderRadius: 8,
+    borderRadius: 6,
     alignItems: "center",
   },
   logoutButtonText: {
-    color: "#fff",
+    color: "#FFF",
     fontSize: 16,
     fontWeight: "600",
-  },
-  offlineIndicator: {
-    backgroundColor: "#FFF3CD",
-    borderLeftWidth: 4,
-    borderLeftColor: "#FF9500",
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    borderRadius: 6,
-    marginBottom: 15,
-  },
-  offlineText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#FF9500",
   },
 });
